@@ -19,6 +19,8 @@ package session
 import (
 	"fmt"
 	"log"
+	"math/rand"
+	"net"
 	"os"
 	"os/user"
 	"strings"
@@ -74,7 +76,10 @@ type TransportHandler interface {
 		pResult interface{}) error
 }
 
-const DefaultTimeout = time.Second * 120
+const (
+	DefaultTimeout   = time.Second * 120
+	DefaultRetryWait = time.Second * 3
+)
 
 // Session stores the information required for communication with the SoftLayer
 // API
@@ -107,6 +112,16 @@ type Session struct {
 	// session. Requests that take longer that the specified timeout
 	// will result in an error.
 	Timeout time.Duration
+
+	// Retries is the number of times to retry a connection that failed due to a timeout.
+	Retries int
+
+	// RetryWait minimum wait time to retry a request
+	RetryWait time.Duration
+}
+
+func init() {
+	rand.Seed(time.Now().UnixNano())
 }
 
 // New creates and returns a pointer to a new session object.  It takes up to
@@ -198,6 +213,8 @@ func New(args ...interface{}) *Session {
 		}
 	}
 
+	sess.RetryWait = DefaultRetryWait
+
 	return sess
 }
 
@@ -231,4 +248,27 @@ func getDefaultTransport(endpointURL string) TransportHandler {
 	}
 
 	return transportHandler
+}
+
+func isTimeout(err error) bool {
+	if slErr, ok := err.(sl.Error); ok {
+		switch slErr.StatusCode {
+		case 408, 504, 599:
+			return true
+		}
+	}
+
+	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+		return true
+	}
+
+	if netErr, ok := err.(*net.OpError); ok && netErr.Timeout() {
+		return true
+	}
+
+	if netErr, ok := err.(net.UnknownNetworkError); ok && netErr.Timeout() {
+		return true
+	}
+
+	return false
 }
